@@ -160,3 +160,80 @@ def test_client_ip_respects_proxy_configuration(monkeypatch):
     monkeypatch.setattr(s, "client_ip_header", "cf-connecting-ip")
     assert client_ip(req({**spoofed, "CF-Connecting-IP": "198.51.100.4"})) == "198.51.100.4"
     assert client_ip(req({})) == "10.0.0.9"
+
+
+def test_embeddings_without_index_field_keep_input_order(monkeypatch):
+    """Gemini's OpenAI-compatible endpoint omits "index"; results come back in input order."""
+    from app.ai import providers
+    s = get_settings()
+    monkeypatch.setattr(s, "openai_api_key", "k")
+    monkeypatch.setattr(providers, "_post", lambda *a, **k: {"data": [{"embedding": [1.0]}, {"embedding": [2.0]},
+                                                                       {"embedding": [3.0]}]})
+    assert providers.OpenAIEmbedder(s).embed(["a", "b", "c"]) == [[1.0], [2.0], [3.0]]
+
+
+def test_rate_limit_is_reported_with_the_providers_retry_delay(monkeypatch):
+    import httpx
+
+    from app.ai import providers
+
+    def fake(status, headers=None, body=""):
+        return lambda *a, **k: httpx.Response(status, headers=headers or {}, text=body,
+                                              request=httpx.Request("POST", "https://x"))
+    monkeypatch.setattr(providers.httpx, "post", fake(429, {"retry-after": "7"}))
+    with pytest.raises(providers.ProviderRateLimited) as exc:
+        providers._post("https://x", {})
+    assert exc.value.retry_after == 7.0
+    google = '[{"error": {"code": 429, "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "17s"}]}}]'
+    monkeypatch.setattr(providers.httpx, "post", fake(429, body=google))
+    with pytest.raises(providers.ProviderRateLimited) as exc:
+        providers._post("https://x", {})
+    assert exc.value.retry_after == 17.0
+    assert isinstance(exc.value, providers.ProviderUnavailable)  # callers that only know the base class still work
+
+
+def test_index_build_waits_out_rate_limits(tmp_path, monkeypatch):
+    from app.ai import providers, rag
+
+    class Flaky(providers.FakeEmbedder):
+        calls = 0
+
+        def embed(self, texts):
+            Flaky.calls += 1
+            if Flaky.calls in (2, 3):
+                raise providers.ProviderRateLimited("slow down", 0.01)
+            return super().embed(texts)
+
+    monkeypatch.setattr(rag.time, "sleep", lambda s: None)
+    kb = rag.KnowledgeBase(get_settings().knowledge_dir, str(tmp_path), Flaky())
+    index = kb.ensure_index()
+    assert Flaky.calls >= 4 and index is not None
+    assert kb.search("How do I manage brown planthopper in rice?", 3)
+
+
+def test_embedding_cache_key_tracks_the_model(monkeypatch):
+    from app.ai import providers
+    s = get_settings()
+    monkeypatch.setattr(s, "openai_api_key", "k")
+    a = providers.OpenAIEmbedder(s).cache_id
+    monkeypatch.setattr(s, "openai_embed_model", "another-model")
+    assert providers.OpenAIEmbedder(s).cache_id != a
+
+
+@pytest.mark.skipif(not __import__("os").getenv("TEST_DATABASE_URL"), reason="needs TEST_DATABASE_URL")
+def test_index_is_cached_in_postgres_across_restarts(tmp_path, monkeypatch):
+    from app.ai import providers, rag
+
+    class Counting(providers.FakeEmbedder):
+        calls = 0
+
+        def embed(self, texts):
+            Counting.calls += 1
+            return super().embed(texts)
+
+    kd = get_settings().knowledge_dir
+    rag.KnowledgeBase(kd, str(tmp_path / "a"), Counting()).ensure_index()
+    built = Counting.calls
+    # A fresh instance with an empty local disk (a restarted container) loads the shared copy.
+    rag.KnowledgeBase(kd, str(tmp_path / "b"), Counting()).ensure_index()
+    assert built > 0 and Counting.calls == built
