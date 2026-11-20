@@ -1,0 +1,36 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/.next
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# production
+/build
+
+# misc
+.DS_Store
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.next/
+.env.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# python backend
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.venv/
+venv/
+# The trained crop classifier (2.5 MB) is committed: production images are built from git.
+.terraform/
+*.tfstate*
