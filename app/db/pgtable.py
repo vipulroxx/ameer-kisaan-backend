@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS ak_items (
     PRIMARY KEY (tbl, pk, sk)
 );
 CREATE INDEX IF NOT EXISTS ak_items_expires ON ak_items (expires_at) WHERE expires_at IS NOT NULL;
+-- Small derived artefacts shared by all instances, e.g. the knowledge-base embedding index.
+CREATE TABLE IF NOT EXISTS ak_blobs (
+    key        text PRIMARY KEY,
+    data       bytea NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 """
 PURGE_EVERY_WRITES = 500
 
@@ -461,15 +467,33 @@ class _Backend:
         )
         self._writes = 0
         self._lock = threading.Lock()
+        self._schema_ready = False
 
     def ensure_schema(self) -> None:
         with self.pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(4242)")  # one creator at a time across workers
             conn.execute(SCHEMA)
+        self._schema_ready = True
 
     def purge_expired(self) -> int:
         with self.pool.connection() as conn:
             return conn.execute("DELETE FROM ak_items WHERE expires_at < %s", (int(time.time()),)).rowcount
+
+    def blob_get(self, key: str) -> bytes | None:
+        self.ensure_schema_once()
+        with self.pool.connection() as conn:
+            row = conn.execute("SELECT data FROM ak_blobs WHERE key = %s", (key,)).fetchone()
+        return bytes(row[0]) if row else None
+
+    def blob_put(self, key: str, data: bytes) -> None:
+        self.ensure_schema_once()
+        with self.pool.connection() as conn:
+            conn.execute("INSERT INTO ak_blobs (key, data) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE "
+                         "SET data = EXCLUDED.data, updated_at = now()", (key, data))
+
+    def ensure_schema_once(self) -> None:
+        if not self._schema_ready:
+            self.ensure_schema()
 
     def note_write(self) -> None:
         with self._lock:

@@ -13,6 +13,7 @@ expose, patch or lock. Past ~100k passages, swap VectorIndex for OpenSearch
 or pgvector behind the same search() call.
 """
 import hashlib
+import io
 import logging
 import re
 import threading
@@ -23,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from app.ai import guardrails
-from app.ai.providers import Embedder, get_embedder, get_llm
+from app.ai.providers import Embedder, ProviderRateLimited, get_embedder, get_llm
 from app.core.config import get_settings
 
 log = logging.getLogger("rag")
@@ -131,6 +132,32 @@ class VectorIndex:
         return out
 
 
+def _db_cache_load(key: str):
+    s = get_settings()
+    if not s.database_url:
+        return None
+    try:
+        from app.db import pgtable
+        data = pgtable.backend(s.database_url, s.database_pool_size).blob_get(f"rag-index:{key}")
+        return np.load(io.BytesIO(data), allow_pickle=False) if data else None
+    except Exception as exc:  # a cache miss must never break the assistant
+        log.warning("index cache load failed: %s", type(exc).__name__)
+        return None
+
+
+def _db_cache_save(key: str, vectors: np.ndarray) -> None:
+    s = get_settings()
+    if not s.database_url:
+        return
+    try:
+        from app.db import pgtable
+        buf = io.BytesIO()
+        np.save(buf, vectors, allow_pickle=False)
+        pgtable.backend(s.database_url, s.database_pool_size).blob_put(f"rag-index:{key}", buf.getvalue())
+    except Exception as exc:
+        log.warning("index cache save failed: %s", type(exc).__name__)
+
+
 class KnowledgeBase:
     def __init__(self, knowledge_dir: str, cache_dir: str | None, embedder: Embedder):
         self.knowledge_dir, self.cache_dir, self.embedder = knowledge_dir, cache_dir, embedder
@@ -139,7 +166,7 @@ class KnowledgeBase:
         self.known_crops: set[str] = set()
 
     def _corpus_hash(self) -> str:
-        h = hashlib.sha256(self.embedder.name.encode())
+        h = hashlib.sha256(self.embedder.cache_id.encode())
         for p in sorted(Path(self.knowledge_dir).glob("*.md")):
             h.update(p.name.encode())
             h.update(p.read_bytes())
@@ -153,24 +180,40 @@ class KnowledgeBase:
                 return self._index
             chunks = chunk_documents(self.knowledge_dir)
             self.known_crops = {c for ch in chunks for c in ch.crops if c != "general"}
-            cache = Path(self.cache_dir) / f"embeddings-{self._corpus_hash()}.npy" if self.cache_dir else None
+            key = self._corpus_hash()
+            cache = Path(self.cache_dir) / f"embeddings-{key}.npy" if self.cache_dir else None
             vectors = None
             if cache and cache.exists():
                 vectors = np.load(cache, allow_pickle=False)  # plain float array, never pickled objects
-                if vectors.shape[0] != len(chunks):
-                    vectors = None
+            if vectors is None:
+                vectors = _db_cache_load(key)  # shared copy survives restarts (Postgres deployments)
+            if vectors is not None and vectors.shape[0] != len(chunks):
+                vectors = None
             if vectors is None:
                 start = time.perf_counter()
                 rows = []
                 for b in range(0, len(chunks), 32):
-                    rows += self.embedder.embed([c.text for c in chunks[b:b + 32]])
+                    rows += self._embed_with_retry([c.text for c in chunks[b:b + 32]])
                 vectors = np.asarray(rows, dtype=np.float32)
-                if cache:
-                    cache.parent.mkdir(parents=True, exist_ok=True)
-                    np.save(cache, vectors, allow_pickle=False)
+                _db_cache_save(key, vectors)
                 log.info("knowledge index built", extra={"duration_ms": round((time.perf_counter() - start) * 1000)})
+            if cache and not cache.exists():
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                np.save(cache, vectors, allow_pickle=False)
             self._index = VectorIndex(chunks, vectors)
             return self._index
+
+    def _embed_with_retry(self, texts: list[str], attempts: int = 8) -> list[list[float]]:
+        """Free tiers cap requests per minute; building the index waits out the limit."""
+        for attempt in range(attempts):
+            try:
+                return self.embedder.embed(texts)
+            except ProviderRateLimited as exc:
+                if attempt == attempts - 1:
+                    raise
+                log.info("embedding rate limit while building index; waiting %.0fs", exc.retry_after)
+                time.sleep(max(exc.retry_after, 2.0))
+        raise AssertionError("unreachable")
 
     def crops_in(self, question: str) -> list[str]:
         words = {_singular(w) for w in re.findall(r"[A-Za-z]+", question)}

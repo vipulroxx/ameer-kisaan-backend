@@ -38,7 +38,7 @@ def aws():
         dynamo.create_tables()
         if PG_URL:
             with dynamo.dynamodb().backend.pool.connection() as conn:
-                conn.execute("TRUNCATE ak_items")
+                conn.execute("TRUNCATE ak_items, ak_blobs")
         storage.ensure_bucket()
         limiter.reset()
         yield
