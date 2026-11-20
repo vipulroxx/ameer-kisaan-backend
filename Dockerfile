@@ -3,12 +3,15 @@ FROM python:3.13-slim AS build
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
 COPY requirements.txt .
-RUN python -m venv /venv && /venv/bin/pip install -r requirements.txt
+RUN python -m venv /venv && /venv/bin/pip install -r requirements.txt \
+ # pip is not needed at runtime; dropping it removes its vendored libraries from the image
+ && /venv/bin/pip uninstall -y pip
 
 FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH="/venv/bin:$PATH" PYTHONPATH=/app \
     INDEX_CACHE_DIR=/tmp/index
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+ && python -m pip uninstall -y pip \
  && groupadd --system app && useradd --system --gid app --home-dir /app --shell /usr/sbin/nologin app
 WORKDIR /app
 COPY --from=build /venv /venv
