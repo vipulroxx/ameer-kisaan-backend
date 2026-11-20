@@ -1,0 +1,6 @@
+# Only needed to train the crop classifier (not installed in the API image)
+# tensorflow-cpu has no macOS wheels; the regular tensorflow package does.
+tensorflow-cpu==2.21.0; sys_platform != "darwin"
+tensorflow==2.21.0; sys_platform == "darwin"
+pillow==13.0.0
+numpy==2.5.5

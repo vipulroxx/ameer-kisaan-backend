@@ -23,3 +23,14 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# python backend
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.venv/
+venv/
+# The trained crop classifier (2.5 MB) is committed: production images are built from git.
+.terraform/
+*.tfstate*
