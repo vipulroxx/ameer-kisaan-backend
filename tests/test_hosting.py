@@ -89,6 +89,14 @@ def test_web_app_is_served_with_spa_fallback(web_client):
     assert web_client.head("/").status_code == 200
 
 
+def test_missing_files_are_404_not_the_app_page(web_client):
+    for path in ("/service-worker.js", "/static/js/missing.123.js", "/logo999.png"):
+        r = web_client.get(path)
+        assert r.status_code == 404 and "<div id=root>" not in r.text, path
+    assert "<div id=root>" in web_client.get("/app/settings").text  # client-side routes still get the app
+    assert "<div id=root>" in web_client.get("/register").text
+
+
 def test_videos_support_range_requests(web_client):
     r = web_client.get("/videos/demo.mp4", headers={"Range": "bytes=0-99"})
     assert r.status_code == 206 and len(r.content) == 100

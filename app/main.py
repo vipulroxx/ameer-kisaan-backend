@@ -107,6 +107,10 @@ def _mount_web_app(app: FastAPI, root: Path, api_prefix: str) -> None:
             else:
                 cache = "public, max-age=3600"
             return FileResponse(target, headers={"Cache-Control": cache})
+        if "." in path.rsplit("/", 1)[-1]:
+            # A missing file (e.g. /service-worker.js): a real 404, not the app's HTML page,
+            # which browsers would otherwise try to run as a script or image.
+            raise HTTPException(404, "Not Found")
         return FileResponse(root / "index.html", headers={"Cache-Control": "no-cache"})
 
 
