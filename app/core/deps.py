@@ -36,6 +36,12 @@ def get_current_user(creds: HTTPAuthorizationCredentials | None = Depends(_beare
 def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if not user.is_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required")
+    # The token's role can be up to ACCESS_TOKEN_TTL old: re-check the stored profile so a
+    # demoted or disabled admin loses access immediately, not when the token expires.
+    from app.services.users import get_user
+    stored = get_user(user.id)
+    if not stored or stored.get("role") != "admin" or stored.get("disabled"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required")
     return user
 
 

@@ -100,6 +100,7 @@ def to_public(user: dict) -> dict:
         "role": user.get("role", "user"), "preferred_crops": list(user.get("preferred_crops", [])),
         "farm_id": user.get("farm_id"), "aadhar_id": user.get("aadhar_masked"),
         "pan_card_number": user.get("pan_masked"), "created_at": user["created_at"],
+        "disabled": bool(user.get("disabled", False)),
     }
 
 
@@ -137,12 +138,26 @@ def set_sessions_cutoff(user_id: str) -> None:
 
 
 def list_users(limit: int = 50, cursor: str | None = None) -> tuple[list[dict], str | None]:
-    kwargs = {"FilterExpression": Attr("pk").begins_with("USER#"), "Limit": limit}
-    if cursor:
-        kwargs["ExclusiveStartKey"] = {"pk": cursor}
-    resp = table("users").scan(**kwargs)
-    nxt = resp.get("LastEvaluatedKey", {}).get("pk")
-    return resp.get("Items", []), nxt
+    """One page of user profiles. The table also holds EMAIL# uniqueness locks, and Limit
+    counts items before the filter, so keep scanning until the page is full or the table ends."""
+    items: list[dict] = []
+    start = {"pk": cursor} if cursor else None
+    while True:
+        kwargs = {"FilterExpression": Attr("pk").begins_with("USER#"), "Limit": max(limit - len(items), 1) * 2}
+        if start:
+            kwargs["ExclusiveStartKey"] = start
+        resp = table("users").scan(**kwargs)
+        for it in resp.get("Items", []):
+            if len(items) < limit:
+                items.append(it)
+                last = it["pk"]
+            else:
+                return items, last  # page full; continue after the last user we returned
+        start = resp.get("LastEvaluatedKey")
+        if not start:
+            return items, None
+        if len(items) >= limit:
+            return items, items[-1]["pk"]
 
 
 # --- Login with lockout -----------------------------------------------------
