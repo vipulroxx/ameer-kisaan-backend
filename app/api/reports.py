@@ -16,6 +16,7 @@ from app.core.deps import CurrentUser, get_current_user, rate_limit, require_adm
 from app.db import storage
 from app.db.dynamo import table
 from app.schemas import REPORT_CATEGORIES, ReportOut, ReportStatusUpdate
+from app.services import users
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 MAX_PHOTOS = 4
@@ -86,7 +87,18 @@ def my_reports(user: CurrentUser = Depends(get_current_user)):
 def reports_by_status(status: str = "open", admin: CurrentUser = Depends(require_admin)):
     resp = table("reports").query(IndexName="status-index", KeyConditionExpression=Key("status").eq(status),
                                   ScanIndexForward=False, Limit=100)
-    return [_out(r) for r in resp.get("Items", [])]
+    owners: dict = {}
+    return [_with_owner(_out(r), owners) for r in resp.get("Items", [])]
+
+
+def _with_owner(rep: ReportOut, owners: dict | None = None) -> ReportOut:
+    """Admin views: who reported it and how to reach them (one profile lookup per farmer)."""
+    owners = {} if owners is None else owners
+    if rep.owner_id not in owners:
+        owners[rep.owner_id] = users.get_user(rep.owner_id)
+    u = owners[rep.owner_id]
+    return rep.model_copy(update={"owner_name": u["username"] if u else "Former member",
+                                  "owner_phone": u.get("phone_number") if u else None})
 
 
 @router.patch("/{owner_id}/{report_id}", response_model=ReportOut)
@@ -102,4 +114,4 @@ def update_status(owner_id: str, report_id: str, body: ReportStatusUpdate, bg: B
                                    ":u": datetime.now(timezone.utc).isoformat()},
         ReturnValues="ALL_NEW")["Attributes"]
     bg.add_task(audit.record, "report.status", admin.id, target=report_id, detail={"status": body.status})
-    return _out(updated)
+    return _with_owner(_out(updated))

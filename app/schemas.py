@@ -79,6 +79,7 @@ class UserOut(ApiModel):
     aadhar_id: str | None = None        # masked, e.g. XXXX-XXXX-9087
     pan_card_number: str | None = None  # masked, e.g. ABXXXXXX4F
     created_at: str
+    disabled: bool = False
 
 
 class TokenResponse(ApiModel):
@@ -191,6 +192,8 @@ class ReportOut(ApiModel):
     status: str
     photo_urls: list[str] = []
     admin_note: str | None = None
+    owner_name: str | None = None   # admin views only
+    owner_phone: str | None = None  # admin views only, so an officer can call the farmer
     created_at: str
     updated_at: str
 
