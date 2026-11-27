@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     azure_openai_chat_deployment: str | None = None
     azure_openai_embed_deployment: str | None = None
     llm_timeout_seconds: float = 60.0
+    # Zero-cost guard: hard ceilings per UTC day on calls to cloud AI providers, kept below
+    # the free plans' own daily quotas (Groq ~1,000 requests and ~200,000 tokens, Gemini
+    # embeddings ~1,000 requests). Past a ceiling the app refuses the call instead of making
+    # it, so even if a payment card were ever added to a provider account, usage could never
+    # go beyond what the free plan allows. 0 switches that provider kind off entirely.
+    ai_daily_chat_requests: int = 900
+    ai_daily_chat_tokens: int = 180_000
+    ai_daily_embed_requests: int = 900
 
     knowledge_dir: str = "knowledge"
     index_cache_dir: str = "/tmp/ameer-kisaan-index"  # noqa: S108 - private per-container disk, rebuilt on start
