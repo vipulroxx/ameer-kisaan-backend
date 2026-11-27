@@ -5,7 +5,7 @@ from boto3.dynamodb.conditions import Key
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
 from app.ai import guardrails, rag, vision
-from app.ai.providers import ProviderUnavailable
+from app.ai.providers import DailyBudgetExhausted, ProviderUnavailable
 from app.api.reports import read_limited
 from app.core import audit
 from app.core.deps import CurrentUser, get_current_user, rate_limit
@@ -35,6 +35,10 @@ def ask(body: AskRequest, bg: BackgroundTasks, user: CurrentUser = Depends(get_c
     except guardrails.GuardrailViolation as exc:
         bg.add_task(audit.record, "assistant.blocked", user.id, outcome="blocked")
         raise HTTPException(400, str(exc))
+    except DailyBudgetExhausted:
+        # Zero-cost limit (see Settings.ai_daily_*): resets at 00:00 UTC, 5:30 AM in India.
+        raise HTTPException(503, "Kisaan AI has answered all the questions it can for free today. "
+                                 "It will be back tomorrow after 5:30 AM.", headers={"Retry-After": "3600"})
     except ProviderUnavailable:
         raise HTTPException(503, "The assistant is temporarily unavailable. Please try again shortly.")
     bg.add_task(_save_history, user.id, body.question, result)
